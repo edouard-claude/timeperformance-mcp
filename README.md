@@ -11,6 +11,7 @@ in front of any MCP client, and in your shell.
 [![MCP](https://img.shields.io/badge/MCP-stdio-8A63D2)](https://modelcontextprotocol.io)
 [![API](https://img.shields.io/badge/TimePerformance-API%20v4-1f8ceb)](https://pma.timeperformance.com/apidoc/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/edouard-claude/timeperformance-mcp?style=flat&logo=github&color=f5c518)](https://github.com/edouard-claude/timeperformance-mcp/stargazers)
 
 </div>
 
