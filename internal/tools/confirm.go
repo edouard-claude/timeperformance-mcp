@@ -1,0 +1,182 @@
+package tools
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+// maxPreview caps how much free-form text (description, notes) is echoed back
+// in a confirmation prompt, in runes.
+const maxPreview = 1500
+
+// confirmTimeout bounds how long a write waits for the user's answer.
+const confirmTimeout = 10 * time.Minute
+
+const elicitationUnsupportedMsg = "write aborted: this client does not support MCP elicitation, so the change could not be confirmed by a human. Show the change to the user and let them run the equivalent CLI command, or set TIMEPERFORMANCE_AUTO_WRITE=1 in the server environment if the client already asks for approval before every tool call."
+
+// clientSupportsElicitation reports whether the client advertised the
+// elicitation capability at initialization. mcp-go does not check this itself
+// and would block until the context expires.
+func clientSupportsElicitation(ctx context.Context) bool {
+	session, ok := server.ClientSessionFromContext(ctx).(server.SessionWithClientInfo)
+	if !ok {
+		return false
+	}
+	return session.GetClientCapabilities().Elicitation != nil
+}
+
+// autoWriteEnabled reports whether the confirmation step is bypassed. Set
+// TIMEPERFORMANCE_AUTO_WRITE=1 for clients that already gate every tool call
+// themselves (e.g. Claude Code's permission prompt).
+func autoWriteEnabled() bool {
+	for _, name := range []string{"TIMEPERFORMANCE_AUTO_WRITE", "TP_AUTO_WRITE"} {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+		case "1", "true", "yes", "on":
+			return true
+		}
+	}
+	return false
+}
+
+// withChangeSummary declares the change_summary parameter shared by every
+// write tool: the calling model must explain the write in the user's own
+// words before it can be confirmed.
+func withChangeSummary() mcp.ToolOption {
+	return mcp.WithString("change_summary",
+		mcp.Description("One or two sentences, in the user's language, explaining what this call will change and why. Shown verbatim to the human in the confirmation prompt — write it for them, not for the API."),
+		mcp.Required(),
+	)
+}
+
+// requireChangeSummary extracts the model's explanation of the write. An
+// empty value rejects the call before anything is shown to the user.
+func requireChangeSummary(req mcp.CallToolRequest) (string, *mcp.CallToolResult) {
+	why := strings.TrimSpace(req.GetString("change_summary", ""))
+	if why == "" {
+		return "", mcp.NewToolResultError("change_summary is required: explain in one or two sentences, in the user's language, what you are about to change and why, then call the tool again")
+	}
+	return why, nil
+}
+
+// confirmWrite asks the user to approve a write through the MCP elicitation
+// flow before it reaches TimePerformance. why is the calling model's own explanation
+// of the change and is shown right under the title. It returns nil when the
+// write may proceed, or the result the tool must return when it has to be
+// aborted. Anything that is not an explicit approval aborts the write.
+func confirmWrite(ctx context.Context, s *server.MCPServer, title, why string, fields []string) *mcp.CallToolResult {
+	if autoWriteEnabled() {
+		return nil
+	}
+
+	if !clientSupportsElicitation(ctx) {
+		return mcp.NewToolResultError(elicitationUnsupportedMsg)
+	}
+
+	// mcp-go waits for the client's answer until the context is cancelled, so
+	// cap the wait: a client that advertises elicitation but never answers
+	// would otherwise hang the tool call forever.
+	ctx, cancel := context.WithTimeout(ctx, confirmTimeout)
+	defer cancel()
+
+	var b strings.Builder
+	b.WriteString(title)
+	if why = strings.TrimSpace(why); why != "" {
+		b.WriteString("\n\n")
+		b.WriteString(why)
+		b.WriteString("\n")
+	}
+	for _, f := range fields {
+		if f == "" {
+			continue
+		}
+		b.WriteString("\n")
+		b.WriteString(f)
+	}
+	b.WriteString("\n\nApply this to TimePerformance?")
+
+	result, err := s.RequestElicitation(ctx, mcp.ElicitationRequest{
+		Params: mcp.ElicitationParams{
+			Message: b.String(),
+			RequestedSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"confirm": map[string]any{
+						"type":        "boolean",
+						"title":       "Confirm",
+						"description": "Yes, write this to TimePerformance",
+					},
+				},
+				"required": []string{"confirm"},
+			},
+		},
+	})
+	if err != nil {
+		if errors.Is(err, server.ErrElicitationNotSupported) || errors.Is(err, server.ErrNoActiveSession) {
+			return mcp.NewToolResultError(elicitationUnsupportedMsg)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return mcp.NewToolResultError("write aborted: no answer from the user within 10 minutes. Nothing was written.")
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("write aborted: confirmation request failed: %v", err))
+	}
+
+	switch result.Action {
+	case mcp.ElicitationResponseActionAccept:
+	case mcp.ElicitationResponseActionDecline:
+		return mcp.NewToolResultError("write aborted: the user declined the change. Do not retry without new instructions.")
+	default:
+		return mcp.NewToolResultError("write aborted: the user cancelled the confirmation. Do not retry without new instructions.")
+	}
+
+	content, ok := result.Content.(map[string]any)
+	if !ok || !truthy(content["confirm"]) {
+		return mcp.NewToolResultError("write aborted: the user did not confirm the change. Do not retry without new instructions.")
+	}
+	return nil
+}
+
+// intSummary renders an optional numeric field, skipping it when unset.
+func intSummary(label string, value *int, format string) string {
+	if value == nil {
+		return ""
+	}
+	return label + ": " + fmt.Sprintf(format, *value)
+}
+
+// truthy interprets the confirmation flag leniently: clients are not all
+// consistent in how they serialize a boolean form field.
+func truthy(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "true", "yes", "1", "on":
+			return true
+		}
+	case float64:
+		return t != 0
+	}
+	return false
+}
+
+// summarize renders a labelled value for a confirmation prompt, truncating
+// long free-form text on a rune boundary.
+func summarize(label, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) > maxPreview {
+		return fmt.Sprintf("%s: %s… (truncated, %d characters total)", label, string(runes[:maxPreview]), len(runes))
+	}
+	return label + ": " + value
+}
