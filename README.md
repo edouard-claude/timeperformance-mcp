@@ -146,6 +146,7 @@ claude mcp add --scope user timeperformance \
 | `create_expense`, `update_expense` | Project expenses |
 | `create_user`, `update_user`, `archive_user` | Accounts and application rights |
 | `manage_project_member` | Add, promote or remove a team member |
+| `set_user_leave` | Add or remove a leave (any unavailability) on a user's half-day schedule |
 | `delete_element` | Permanently delete a task, deliverable, phase, expense or datasheet |
 
 Reports come back as the API's own JSON: read the indicators you need instead of

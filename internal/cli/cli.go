@@ -103,6 +103,8 @@ func Run(args []string, client *tp.Client) int {
 		return cmdArchiveUser(client, args[1:])
 	case "team-member":
 		return cmdTeamMember(client, args[1:])
+	case "leave":
+		return cmdLeave(client, args[1:])
 	case "delete":
 		return cmdDelete(client, args[1:])
 
@@ -157,6 +159,7 @@ Writes (need back-office credentials, and --yes to actually send):
   update-user <user>           --email, --profile, rights flags, …
   archive-user <user>          Archive an account
   team-member <project>        --user, --action add|set_rights|remove
+  leave <user>                 --type, --from, --to, --remove, --mode, …
   delete                       --kind task|deliverable|phase|expense|datasheet --id
 
 Server:

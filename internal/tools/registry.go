@@ -46,5 +46,6 @@ func RegisterAll(s *server.MCPServer, client *tp.Client) {
 	registerUpdateUser(s, client)
 	registerArchiveUser(s, client)
 	registerManageProjectMember(s, client)
+	registerSetUserLeave(s, client)
 	registerDeleteElement(s, client)
 }

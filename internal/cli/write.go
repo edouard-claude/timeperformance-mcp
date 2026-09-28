@@ -824,3 +824,60 @@ func cmdDelete(client *tp.Client, args []string) int {
 	}
 	return out(fmt.Sprintf("Deleted %s #%d.", kind, id))
 }
+
+// --- leave ---
+
+func cmdLeave(client *tp.Client, args []string) int {
+	f := newFlags("leave")
+	f.str("type", "Leave type: unavailability id or name (required unless --remove)")
+	f.str("from", "First day of the leave (ISO 8601 date, required)")
+	f.str("to", "Last day of the leave, inclusive (ISO 8601 date, required)")
+	f.str("from-half", "AM (default) or PM: PM starts the leave at noon")
+	f.str("to-half", "PM (default) or AM: AM ends the leave at noon")
+	f.bool("weekends", "Also plan Saturdays and Sundays")
+	f.bool("remove", "Clear the leave on these half-days instead of adding it")
+	f.str("mode", "On conflict with existing assignments: ALL_OR_NOTHING (default), NON_CONFLICT_ONLY, FORCE_OVERRIDE")
+	yesFlag(f)
+	rest, code, ok := f.parse(args, "<user id, name, email or \"me\">")
+	if !ok {
+		return code
+	}
+	ref, code, ok := firstArg(rest, "user")
+	if !ok {
+		return code
+	}
+	if f.getStr("from") == "" || f.getStr("to") == "" {
+		return failf("--from and --to are required (ISO 8601 dates)")
+	}
+	userID, err := client.ResolveUserID(ref)
+	if err != nil {
+		return failf("%v", err)
+	}
+
+	remove := f.getBool("remove")
+	plan, activity, err := client.PlanUserLeave(tp.LeaveRequest{
+		UserID:    userID,
+		Activity:  f.getStr("type"),
+		FirstDay:  f.getStr("from"),
+		FirstHalf: f.getStr("from-half"),
+		LastDay:   f.getStr("to"),
+		LastHalf:  f.getStr("to-half"),
+		Weekends:  f.getBool("weekends"),
+		Remove:    remove,
+		SyncMode:  f.getStr("mode"),
+	})
+	if err != nil {
+		return failf("%v", err)
+	}
+	if len(plan.Added) == 0 && len(plan.Removed) == 0 {
+		return out(tools.NoLeaveChange)
+	}
+	if !confirmed(f, "Change a TimePerformance leave schedule:", tools.LeaveSummary(plan, activity, userID, remove)) {
+		return 0
+	}
+	res, err := client.SyncUserUnavailabilities(userID, plan.Sync)
+	if err != nil {
+		return failf("sync unavailabilities failed: %v", err)
+	}
+	return out(tools.FormatSyncResult(res, plan.Sync.SyncMode))
+}

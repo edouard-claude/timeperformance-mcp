@@ -94,6 +94,11 @@ explicit `confirm: true`.
 - Some reference endpoints (`/obs`) answer 403 depending on account permissions,
   even with read credentials — a GET 403 means "not allowed to read this", not
   "you need write credentials".
+- Leaves go through `POST /users/{id}/assignments/syncUnavailabilities`, a
+  **whole sync** over `firstDay..lastDay`: anything not sent is deleted.
+  `PlanUserLeave` (leave.go) reads `/assignments` first and merges, keeping
+  every unavailability (archived types included). Leave types are the
+  `/npactivities` items with `unavailable: true`.
 - Deliverables are `type = "goal"` in the API; a deliverable's `iteration` is the
   phase it is planned for.
 - Task `state` and WBS `state` enums are lowercase (`draft`, `ready`, `open`,
